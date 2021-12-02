@@ -11,7 +11,7 @@ POC to demonstrate implementation of local state store.
 docker-compose up -d
 ```
 
-## Creating a test topic and changelog topic
+## Creating a test topic
 ```bash
 docker exec -it 4da81527e4e5 bash
 /opt/bitnami/kafka/bin/kafka-topics.sh --create \
