@@ -11,35 +11,21 @@ POC to demonstrate implementation of local state store.
 docker-compose up -d
 ```
 
-## Creating a test topic
+## Creating a test topic and changelog topic
 ```bash
 docker exec -it 4da81527e4e5 bash
-cd /opt/bitnami/kafka
-bin/kafka-topics.sh --create \
+/opt/bitnami/kafka/bin/kafka-topics.sh --create \
 --zookeeper zookeeper:2181 \
 --replication-factor 1 \
 --partitions 10 \
 --topic test-topic
-``` 
-
-## Repartition topic
-```bash
-docker exec -it 8b6a59cd123f bash
-cd /opt/bitnami/kafka
-bin/kafka-topics.sh \
+/opt/bitnami/kafka/bin/kafka-topics.sh --create \
 --zookeeper zookeeper:2181 \
---alter --topic test-topic \
---partitions 1000
-```
-## Monitoring consumer lag
-```bash
-while true; do ./bin/kafka-consumer-groups.sh --bootstrap-server localhost:29092 --describe --group my-group && sleep 1; done
-```
-## Consuming from topics with CLI
-```
-docker exec -it 8b6a59cd123f bash
-cd /opt/bitnami/kafka
-bin/kafka-console-consumer.sh --topic output-topic --from-beginning --bootstrap-server localhost:9092
+--replication-factor 1 \
+--partitions 10 \
+--config "cleanup.policy=compact"
+--topic test-topic-changelog
+
 ```
 
 # Running State Store POC
@@ -63,3 +49,15 @@ bin/kafka-console-consumer.sh --topic output-topic --from-beginning --bootstrap-
 ```
     mvn exec:java@consumer2
 ```    
+# Monitoring
+
+## Monitoring consumer lag
+```bash
+while true; do ./bin/kafka-consumer-groups.sh --bootstrap-server localhost:29092 --describe --group my-group && sleep 1; done
+```
+## Consuming from topics with CLI
+```
+docker exec -it 8b6a59cd123f bash
+cd /opt/bitnami/kafka
+bin/kafka-console-consumer.sh --topic test-topic --from-beginning --bootstrap-server localhost:9092
+```

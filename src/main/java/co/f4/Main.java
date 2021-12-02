@@ -1,8 +1,5 @@
 package co.f4;
 
-import co.f4.Consumer;
-import co.f4.Producer;
-
 public class Main {
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {

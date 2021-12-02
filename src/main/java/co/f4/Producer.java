@@ -9,7 +9,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 
-public class Producer {
+    public class Producer {
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
             throw new IllegalArgumentException("Usage: java co.f4.Producer [consumer|producer] <topic>");
@@ -18,9 +18,9 @@ public class Producer {
         String topic = args[1];
 
         Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092");
-        props.put(ProducerConfig.BATCH_SIZE_CONFIG, "1"); // in bytes, low because messages are small
-        props.put(ProducerConfig.LINGER_MS_CONFIG, "0");
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:29092");
+        //props.put(ProducerConfig.BATCH_SIZE_CONFIG, "4"); // in bytes, low because messages are small
+        //props.put(ProducerConfig.LINGER_MS_CONFIG, "5");
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.RETRIES_CONFIG, 0);
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
@@ -34,13 +34,12 @@ public class Producer {
         SendCallback callback = new SendCallback();
         Random random = new Random();
         for (int i = 0; i < 1000000; i++) {
-            // generate random number between 1 and 1,000
-            String key = Integer.toString(random.nextInt(1000 - 1) + 1);
-
+            // generate random number between 1 and 10
+            String key = Integer.toString(random.nextInt(10 - 1) + 1);            
             ProducerRecord<String, String> record = new ProducerRecord<String, String>(topic, key, Integer.toString(i));
-            long startTime = System.currentTimeMillis();
+            //long startTime = System.currentTimeMillis();
             producer.send(record, callback);
-            long elapsedTime = System.currentTimeMillis() - startTime;
+            //long elapsedTime = System.currentTimeMillis() - startTime;
             System.out.println("Sent topic='" + topic + "' key='" + key + "' value='" + i + "'");
 
         }
@@ -57,7 +56,7 @@ public class Producer {
                 System.out.println("Error while producing message to topic :" + recordMetadata);
                 e.printStackTrace();
             } else {
-                String message = String.format("sent message to topic:%s partition:%s  offset:%s", recordMetadata.topic(), recordMetadata.partition(), recordMetadata.offset());
+                String message = String.format("Sent message to topic=%s partition=%s offset=%s", recordMetadata.topic(), recordMetadata.partition(), recordMetadata.offset());
                 System.out.println(message);
             }
         }
