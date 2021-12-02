@@ -30,6 +30,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.rocksdb.BlockBasedTableConfig;
 import org.rocksdb.BloomFilter;
 import org.rocksdb.ColumnFamilyDescriptor;
@@ -44,13 +46,15 @@ import org.rocksdb.DBOptions;
 import org.rocksdb.InfoLogLevel;
 
 public class RocksDBStateStore implements Closeable {
+  private static final Logger logger = LogManager.getLogger(RocksDBStateStore.class);
+
   private static final String CHANGELOG_TOPIC_SUFFIX = "-cl";
   private static final long WRITE_BUFFER_SIZE = 16 * 1024 * 1024L;
   private static final long BLOCK_SIZE = 4096L;
   private static final int MAX_WRITE_BUFFERS = 3;
   private static final CompressionType COMPRESSION_TYPE = CompressionType.NO_COMPRESSION;
   private static final CompactionStyle COMPACTION_STYLE = CompactionStyle.UNIVERSAL;
-  
+
   private final String name;
   private static final Set<String> names = new HashSet<>();
 
@@ -58,27 +62,17 @@ public class RocksDBStateStore implements Closeable {
 
   private final boolean restoreTombstonesAsNull;
 
+  //RockDB related resources
   private final ColumnFamilyOptions columnFamilyOptions;
-
-  // list of column family descriptors, first entry must always be default column family
   private final List<ColumnFamilyDescriptor> cfDescriptors;
-
-  // a list which will hold the handles for the column families once the db is
-  // opened
   private final List<ColumnFamilyHandle> columnFamilyHandleList;
-
   private final DBOptions options;
-
   private final WriteOptions writeOptions;
-
-  //private final FlushOptions flushOptions;
-
   private final BloomFilter bloomFilter;
-
   private final RocksDB db;
-
   private final String dbFilePath;
 
+  //Kafka related resources
   private final KafkaProducer<String, byte[]> producer;
   private final String changelogTopicName;
   private final TopicPartition changelogTopicPartition;
@@ -102,12 +96,13 @@ public class RocksDBStateStore implements Closeable {
    *                                the changelog is restored as a null value for
    *                                that key. Otherwise the key-value pair is
    *                                deleted from the state store during restore.
-   * @throws RocksDBException
+   * 
+   * @throws RocksDBException       If problem accessing RocksDB instance
    */
   public RocksDBStateStore(String name, boolean restoreTombstonesAsNull) throws RocksDBException {
     this.name = name;
     this.restoreTombstonesAsNull = restoreTombstonesAsNull;
-    
+
     // ensure name is unique and throw Exception if name already exists in JVM
     if (names.contains(name))
       throw new IllegalArgumentException("Instance already exists with name '" + name + "'");
@@ -119,47 +114,44 @@ public class RocksDBStateStore implements Closeable {
     // RocksDB configuration used by Kafka can be found at:
     // https://sourcegraph.com/github.com/apache/kafka@2.8.1/-/blob/streams/src/main/java/org/apache/kafka/streams/state/internals/RocksDBStore.java?L126
 
-    
     final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig();
     tableConfig.setBlockSize(BLOCK_SIZE);
-    bloomFilter = new BloomFilter();    
+    bloomFilter = new BloomFilter();
     tableConfig.setFilterPolicy(bloomFilter);
-    
+
     columnFamilyOptions = new ColumnFamilyOptions()
-      .setTableFormatConfig(tableConfig)
-      .setWriteBufferSize(WRITE_BUFFER_SIZE)
-      .setCompactionStyle(COMPACTION_STYLE)
-      .setCompressionType(COMPRESSION_TYPE)
-      .setMaxWriteBufferNumber(MAX_WRITE_BUFFERS)
-      ;
+        .setTableFormatConfig(tableConfig)
+        .setWriteBufferSize(WRITE_BUFFER_SIZE)
+        .setCompactionStyle(COMPACTION_STYLE)
+        .setCompressionType(COMPRESSION_TYPE)
+        .setMaxWriteBufferNumber(MAX_WRITE_BUFFERS);
     columnFamilyOptions.optimizeFiltersForHits();
+
     cfDescriptors = Arrays.asList(
-      new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, columnFamilyOptions),
-      new ColumnFamilyDescriptor(name.getBytes(), columnFamilyOptions));
+        new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, columnFamilyOptions),
+        new ColumnFamilyDescriptor(name.getBytes(), columnFamilyOptions));
 
     columnFamilyHandleList = new ArrayList<>();
 
-    options = new DBOptions()  
-      .setCreateIfMissing(true)
-      .setErrorIfExists(false)
-      .setInfoLogLevel(InfoLogLevel.ERROR_LEVEL)
-      .setCreateMissingColumnFamilies(true)
-      // NOTE from Kafka source about this parallelism:
-      // this is the recommended way to increase parallelism in RocksDb
-      // note that the current implementation of setIncreaseParallelism affects the number
-      // of compaction threads but not flush threads (the latter remains one). Also
-      // the parallelism value needs to be at least two because of the code in
-      // https://github.com/facebook/rocksdb/blob/62ad0a9b19f0be4cefa70b6b32876e764b7f3c11/util/options.cc#L580
-      // subtracts one from the value passed to determine the number of compaction threads
-      // (this could be a bug in the RocksDB code and their devs have been contacted).
-      .setIncreaseParallelism(Math.max(Runtime.getRuntime().availableProcessors(), 2))
-      ;
+    options = new DBOptions()
+        .setCreateIfMissing(true)
+        .setErrorIfExists(false)
+        .setInfoLogLevel(InfoLogLevel.ERROR_LEVEL)
+        .setCreateMissingColumnFamilies(true)
+        // NOTE from Kafka source about this parallelism:
+        // this is the recommended way to increase parallelism in RocksDb
+        // note that the current implementation of setIncreaseParallelism affects the
+        // number
+        // of compaction threads but not flush threads (the latter remains one). Also
+        // the parallelism value needs to be at least two because of the code in
+        // https://github.com/facebook/rocksdb/blob/62ad0a9b19f0be4cefa70b6b32876e764b7f3c11/util/options.cc#L580
+        // subtracts one from the value passed to determine the number of compaction
+        // threads
+        // (this could be a bug in the RocksDB code and their devs have been contacted).
+        .setIncreaseParallelism(Math.max(Runtime.getRuntime().availableProcessors(), 2));
 
     writeOptions = new WriteOptions();
     writeOptions.setDisableWAL(true);
-
-    //flushOptions = new FlushOptions();
-    //flushOptions.setWaitForFlush(true);
 
     Path stateDir = Paths.get(System.getProperty("user.dir"), "target", "" + ProcessHandle.current().pid(), "state");
     stateDir.toFile().mkdirs();
@@ -167,11 +159,11 @@ public class RocksDBStateStore implements Closeable {
 
     db = RocksDB.open(options, dbFilePath, cfDescriptors, columnFamilyHandleList);
     if (db == null) {
-      System.out.println("RocksDB instance for state store name '" + name + "' could not be opened.");
+      logger.debug("RocksDB instance for state store name '{}' could not be opened.", name);
       try {
         close();
       } catch (Exception e) {
-        System.out.println("RocksDB instance for state store name '" + name + "' could not be closed.");
+        logger.debug("RocksDB instance for state store name '{}' could not be closed.", name);
       }
       throw new RuntimeException("RocksDB instance for state store name '" + name + "' could not be opened.");
     }
@@ -184,9 +176,9 @@ public class RocksDBStateStore implements Closeable {
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
-    
-    producer = createProducer();   
-    
+
+    producer = createProducer();
+
     restore();
   }
 
@@ -194,8 +186,12 @@ public class RocksDBStateStore implements Closeable {
     this(name, false);
   }
 
+  /**
+   * Close all resources. If the state store is already closed then
+   * the function returns. Note implementation of Closeable to enable the
+   * use of try-with-resource blocks.
+   */
   public void close() {
-    // TODO: don't execute other methods of this class if closed
     if (closed)
       return;
 
@@ -215,16 +211,23 @@ public class RocksDBStateStore implements Closeable {
     options.close();
     columnFamilyOptions.close();
     writeOptions.close();
-    //flushOptions.close();
     bloomFilter.close();
   }
 
+  /**
+   * Call close() during garabe collection.
+   */
   @Override
   protected void finalize() throws Throwable {
     close();
   }
 
+  /**
+   * Destory the state store
+   */
   public void destroy() throws RocksDBException {
+    if (closed)
+      throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
     /*
      * try (Options options = new Options()) {
      * RocksDB.destroyDB(dbFilePath, options);
@@ -236,8 +239,7 @@ public class RocksDBStateStore implements Closeable {
      * String cfName = new String(columnFamilyHandle.getName(),
      * StandardCharsets.UTF_8);
      * if (name.equals(cfName)) {
-     * System.out.println("destroy - closing columnFamilyHandle.name=\"" + cfName +
-     * "\"");
+     * logger.debug("destroy - closing columnFamilyHandle.name=\"{}\"", cfName);
      * columnFamilyHandle.close();
      * }
      * }
@@ -246,9 +248,21 @@ public class RocksDBStateStore implements Closeable {
     db.dropColumnFamily(columnFamilyHandleList.get(1));
   }
 
+  /**
+   * Put to state store.
+   * 
+   * @param key
+   * @param value
+   * @throws RocksDBException      If problem accessing RocksDB instance
+   * @throws IllegalStateException If the state store is closed from a previous
+   *                               call of close()
+   */
   public void put(String key, byte[] value) throws RocksDBException {
+    if (closed)
+      throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
+
     // TODO: distributed transaction, must rollback so use TransactionDB and
-    // producer transactions
+    // producer transactions https://www.confluent.io/blog/transactions-apache-kafka/
     ProducerRecord<String, byte[]> record = new ProducerRecord<String, byte[]>(changelogTopicName, key, value);
 
     try {
@@ -261,7 +275,18 @@ public class RocksDBStateStore implements Closeable {
     db.put(columnFamilyHandleList.get(1), writeOptions, key.getBytes(), value);
   }
 
+  /**
+   * Delete from state store.
+   * 
+   * @param key
+   * @throws RocksDBException      If problem accessing RocksDB instance
+   * @throws IllegalStateException If the state store is closed from a previous
+   *                               call of close()
+   */
   public void delete(String key) throws RocksDBException {
+    if (closed)
+      throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
+
     // TODO: distributed transaction, must rollback so use TransactionDB and
     // producer transactions
     ProducerRecord<String, byte[]> record = new ProducerRecord<String, byte[]>(changelogTopicName, key, null);
@@ -275,24 +300,40 @@ public class RocksDBStateStore implements Closeable {
     db.delete(columnFamilyHandleList.get(1), writeOptions, key.getBytes());
   }
 
+  /**
+   * Get value from state store.
+   * 
+   * @param key
+   * @return Value from state store or null if not found
+   * 
+   * @throws RocksDBException      If problem accessing RocksDB instance
+   * @throws IllegalStateException If the state store is closed from a previous
+   *                               call of close()
+   */
   public byte[] get(String key) throws RocksDBException {
+    if (closed)
+      throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
     return db.get(columnFamilyHandleList.get(1), key.getBytes());
   }
 
   /**
-   * Restores the state store from the changelog. WARNING: Not thread safe.
+   * Restores the state store from the changelog topic. WARNING: Not thread safe.
    * 
    * see org/apache/kafka/streams/processor/internals/ProcessorStateManager for
    * how Kafka restores.
    * This class can be used as a guide to add additional features
    * 
-   * @throws RocksDBException
+   * @throws RocksDBException       If problem accessing RocksDB instance
+   * @throws IllegalStateException  If the state store is closed from a previous
+   *                                call of close()
    */
   public void restore() throws RocksDBException {
-    System.out.println("restore - restoreTombstonesAsNull=" + restoreTombstonesAsNull
-        + ", changelogTopicPartition.topic=" + changelogTopicPartition.topic() + ", changelogTopicPartition.partition="
-        + changelogTopicPartition.partition());
+    if (closed)
+      throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
 
+    logger.debug(
+        "restore - restoreTombstonesAsNull={}, changelogTopicPartition.topic={}, changelogTopicPartition.partition={}",
+        restoreTombstonesAsNull, changelogTopicPartition.topic(), changelogTopicPartition.partition());
     KafkaConsumer<String, byte[]> consumer = null;
     try {
       consumer = createConsumer();
@@ -304,47 +345,42 @@ public class RocksDBStateStore implements Closeable {
       consumer.seekToBeginning(Collections.singletonList(changelogTopicPartition));
       long beginningOffset = consumer.position(changelogTopicPartition);
 
-      System.out.printf("restore - changelogTopicPartition.topic=%s, beginningOffset=%d, endOffset=%d, difference=%d\n", changelogTopicPartition.topic(), beginningOffset, endOffset, (endOffset-beginningOffset));
+      logger.debug("restore - changelogTopicPartition.topic={}, beginningOffset={}, endOffset={}, difference={}",
+          changelogTopicPartition.topic(), beginningOffset, endOffset, (endOffset - beginningOffset));
 
       ConsumerRecords<String, byte[]> records = null;
       do {
         records = consumer.poll(Duration.ofMillis(100));
-        System.out.printf("restore - poll returned %d records\n", records.count());
+        logger.debug("restore - poll returned {} records", records.count());
         for (ConsumerRecord<String, byte[]> record : records) {
-          System.out.printf("restore - partition=%d, offset=%d, key=%s, value=%s\n", record.partition(), record.offset(), record.key(), record.value());
+          logger.debug("restore - partition={}, offset={}, key={}, value={}", record.partition(), record.offset(),
+              record.key(), record.value());
 
           if (record.value() == null) {
             if (restoreTombstonesAsNull) {
-              System.out.println("restore - tombstone as null, db.put(\"" + record.key() + "\")");
+              logger.debug("restore - tombstone as null, db.put(\"{}\")", record.key());
               db.put(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes(), null);
             } else {
-              System.out.println("restore - db.delete(\"" + record.key() + "\")");
+              logger.debug("restore - db.delete(\"{}\")", record.key());
               db.delete(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes());
             }
           } else {
-            System.out.println("restore - db.put(\"" + record.key() + "\", \"" + new String(record.value(), StandardCharsets.UTF_8) + "\")");
+            logger.debug("restore - db.put(\"{}\", \"{}\")", record.key(), record.value());
             db.put(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes(), record.value());
           }
         }
       } while (records != null && !records.isEmpty());
     } finally {
       // no need to commit or leave time for cleanup
-      // because every consumer will read from beginning to end of this changelog topic
+      // because every consumer will read from beginning to end of this changelog
+      // topic
       consumer.close(Duration.ZERO);
     }
 
     // TODO: remove this code that is for test verification only
     byte[] count = get("count");
-    //System.err.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
-    //    + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    System.err.println(System.nanoTime() + "\trestore \tstore name='" + name + "',\tkey='count',\tvalue='"
-        + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    System.out.println(System.nanoTime() + "\trestore \tstore name='" + name + "',\tkey='count',\tvalue='"
-        + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    //System.out.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
-    //    + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    System.out.println(System.nanoTime() + " ****** after restore store name='" + name + "', key='count', value='"
-        + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
+    logger.error("restore \tstore name='{}',\tkey='count',\tvalue='{}'", name,
+        (count != null ? new String(count, StandardCharsets.UTF_8) : "null"));
   }
 
   private void createChangelogTopic(String topicName) throws InterruptedException, ExecutionException {
@@ -354,14 +390,13 @@ public class RocksDBStateStore implements Closeable {
 
     ListTopicsResult listTopics = adminClient.listTopics();
     Set<String> topicNames = listTopics.names().get();
-    
+
     if (topicNames.contains(topicName) == false) {
       List<NewTopic> topicList = new ArrayList<NewTopic>();
       Map<String, String> topicConfigs = new HashMap<String, String>();
-      // compact the log see: https://kafka.apache.org/documentation/#compaction
+      // compact the changelog tpoic
+      // see https://kafka.apache.org/documentation/#compaction
       // props that start with "log." are server default properties
-      //topicConfigs.put("log.cleanup.policy", "compact");
-
       // see https://kafka.apache.org/documentation.html#topicconfigs
       topicConfigs.put("cleanup.policy", "compact");
       topicConfigs.put("min.compaction.lag.ms", "100");
@@ -370,18 +405,21 @@ public class RocksDBStateStore implements Closeable {
       topicConfigs.put("segment.ms", "100");
       topicConfigs.put("retention.ms", "-1"); // must retain all messages
       topicConfigs.put("delete.retention.ms", "1000");
-      // A typical scenario would be to create a topic with a replication factor of 3, set min.insync.replicas to 2, and produce with acks of "all". This will ensure that the producer raises an exception if a majority of replicas do not receive a write.
-      // TODO: enable min.insync.replicas when on larger cluster 
-      //topicConfigs.put("min.insync.replicas", "2");
+      // A typical scenario would be to create a topic with a replication factor of 3,
+      // set min.insync.replicas to 2, and produce with acks of "all". This will
+      // ensure that the producer raises an exception if a majority of replicas do not
+      // receive a write.
+      // TODO: enable min.insync.replicas when on larger cluster
+      // topicConfigs.put("min.insync.replicas", "2");
 
       int topicPartitions = 1; // must be one to ensure that only one consumer will restore
       Short replicationFactor = 1;
       NewTopic newTopic = new NewTopic(topicName, topicPartitions, replicationFactor).configs(topicConfigs);
       topicList.add(newTopic);
-      System.out.println("RocksDBStateStore.createChangelogTopic - creating topic=" + newTopic);
+      logger.debug("RocksDBStateStore.createChangelogTopic - creating topic={}", newTopic);
       adminClient.createTopics(topicList);
     } else {
-      System.out.println("RocksDBStateStore.createChangelogTopic - creating topic with name='" + topicName + "' exists");
+      logger.debug("RocksDBStateStore.createChangelogTopic - creating topic with name='{}' exists", topicName);
     }
   }
 
@@ -410,7 +448,7 @@ public class RocksDBStateStore implements Closeable {
     props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
         "org.apache.kafka.common.serialization.ByteArrayDeserializer");
     props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
-    //props.put(ConsumerConfig.GROUP_ID_CONFIG, name);
+    // props.put(ConsumerConfig.GROUP_ID_CONFIG, name);
     props.put(ConsumerConfig.GROUP_ID_CONFIG, UUID.randomUUID().toString()); // force a read from beginning of topic
     KafkaConsumer<String, byte[]> kafkaConsumer = new KafkaConsumer<String, byte[]>(props);
     return kafkaConsumer;
