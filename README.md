@@ -19,13 +19,6 @@ docker exec -it 4da81527e4e5 bash
 --replication-factor 1 \
 --partitions 10 \
 --topic test-topic
-/opt/bitnami/kafka/bin/kafka-topics.sh --create \
---zookeeper zookeeper:2181 \
---replication-factor 1 \
---partitions 10 \
---config "cleanup.policy=compact"
---topic test-topic-changelog
-
 ```
 
 # Running State Store POC
@@ -49,7 +42,7 @@ docker exec -it 4da81527e4e5 bash
 ```
     mvn exec:java@consumer2
 ```    
-# Monitoring
+# Monitoring & Kafka Administration
 
 ## Monitoring consumer lag
 ```bash
@@ -60,4 +53,11 @@ while true; do ./bin/kafka-consumer-groups.sh --bootstrap-server localhost:29092
 docker exec -it 8b6a59cd123f bash
 cd /opt/bitnami/kafka
 bin/kafka-console-consumer.sh --topic test-topic --from-beginning --bootstrap-server localhost:9092
+```
+
+## Deleting all topic
+```
+docker exec -it 8b6a59cd123f bash
+cd /opt/bitnami/kafka
+bin/kafka-topics.sh --zookeeper zookeeper:2181 --delete --topic 'test-topic.*'
 ```
