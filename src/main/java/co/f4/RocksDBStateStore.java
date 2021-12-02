@@ -30,15 +30,27 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
+import org.rocksdb.CompactionStyle;
+import org.rocksdb.CompressionType;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
+import org.rocksdb.WriteOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.InfoLogLevel;
 
 public class RocksDBStateStore implements Closeable {
   private static final String CHANGELOG_TOPIC_SUFFIX = "-cl";
+  private static final long WRITE_BUFFER_SIZE = 16 * 1024 * 1024L;
+  private static final long BLOCK_SIZE = 4096L;
+  private static final int MAX_WRITE_BUFFERS = 3;
+  private static final CompressionType COMPRESSION_TYPE = CompressionType.NO_COMPRESSION;
+  private static final CompactionStyle COMPACTION_STYLE = CompactionStyle.UNIVERSAL;
+  
   private final String name;
   private static final Set<String> names = new HashSet<>();
 
@@ -46,10 +58,9 @@ public class RocksDBStateStore implements Closeable {
 
   private final boolean restoreTombstonesAsNull;
 
-  private final ColumnFamilyOptions cfOpts;
+  private final ColumnFamilyOptions columnFamilyOptions;
 
-  // list of column family descriptors, first entry must always be default column
-  // family
+  // list of column family descriptors, first entry must always be default column family
   private final List<ColumnFamilyDescriptor> cfDescriptors;
 
   // a list which will hold the handles for the column families once the db is
@@ -58,9 +69,16 @@ public class RocksDBStateStore implements Closeable {
 
   private final DBOptions options;
 
+  private final WriteOptions writeOptions;
+
+  //private final FlushOptions flushOptions;
+
+  private final BloomFilter bloomFilter;
+
   private final RocksDB db;
 
   private final String dbFilePath;
+
   private final KafkaProducer<String, byte[]> producer;
   private final String changelogTopicName;
   private final TopicPartition changelogTopicPartition;
@@ -98,24 +116,54 @@ public class RocksDBStateStore implements Closeable {
     // a static method that loads the RocksDB C++ library.
     RocksDB.loadLibrary();
 
-    cfOpts = new ColumnFamilyOptions().optimizeUniversalStyleCompaction();
+    // RocksDB configuration used by Kafka can be found at:
+    // https://sourcegraph.com/github.com/apache/kafka@2.8.1/-/blob/streams/src/main/java/org/apache/kafka/streams/state/internals/RocksDBStore.java?L126
 
+    
+    final BlockBasedTableConfig tableConfig = new BlockBasedTableConfig();
+    tableConfig.setBlockSize(BLOCK_SIZE);
+    bloomFilter = new BloomFilter();    
+    tableConfig.setFilterPolicy(bloomFilter);
+    
+    columnFamilyOptions = new ColumnFamilyOptions()
+      .setTableFormatConfig(tableConfig)
+      .setWriteBufferSize(WRITE_BUFFER_SIZE)
+      .setCompactionStyle(COMPACTION_STYLE)
+      .setCompressionType(COMPRESSION_TYPE)
+      .setMaxWriteBufferNumber(MAX_WRITE_BUFFERS)
+      ;
+    columnFamilyOptions.optimizeFiltersForHits();
     cfDescriptors = Arrays.asList(
-        new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, cfOpts),
-        new ColumnFamilyDescriptor(name.getBytes(), cfOpts));
+      new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, columnFamilyOptions),
+      new ColumnFamilyDescriptor(name.getBytes(), columnFamilyOptions));
 
     columnFamilyHandleList = new ArrayList<>();
 
-    options = new DBOptions()
-        .setCreateIfMissing(true)
-        .setCreateMissingColumnFamilies(true);
+    options = new DBOptions()  
+      .setCreateIfMissing(true)
+      .setErrorIfExists(false)
+      .setInfoLogLevel(InfoLogLevel.ERROR_LEVEL)
+      .setCreateMissingColumnFamilies(true)
+      // NOTE from Kafka source about this parallelism:
+      // this is the recommended way to increase parallelism in RocksDb
+      // note that the current implementation of setIncreaseParallelism affects the number
+      // of compaction threads but not flush threads (the latter remains one). Also
+      // the parallelism value needs to be at least two because of the code in
+      // https://github.com/facebook/rocksdb/blob/62ad0a9b19f0be4cefa70b6b32876e764b7f3c11/util/options.cc#L580
+      // subtracts one from the value passed to determine the number of compaction threads
+      // (this could be a bug in the RocksDB code and their devs have been contacted).
+      .setIncreaseParallelism(Math.max(Runtime.getRuntime().availableProcessors(), 2))
+      ;
+
+    writeOptions = new WriteOptions();
+    writeOptions.setDisableWAL(true);
+
+    //flushOptions = new FlushOptions();
+    //flushOptions.setWaitForFlush(true);
 
     Path stateDir = Paths.get(System.getProperty("user.dir"), "target", "" + ProcessHandle.current().pid(), "state");
     stateDir.toFile().mkdirs();
     dbFilePath = Paths.get(stateDir.toString(), name).toString();
-
-    // RocksDB configuration used by Kafka can be found at:
-    // https://sourcegraph.com/github.com/apache/kafka@2.8.1/-/blob/streams/src/main/java/org/apache/kafka/streams/state/internals/RocksDBStore.java?L126
 
     db = RocksDB.open(options, dbFilePath, cfDescriptors, columnFamilyHandleList);
     if (db == null) {
@@ -165,7 +213,10 @@ public class RocksDBStateStore implements Closeable {
       db.close();
 
     options.close();
-    cfOpts.close();
+    columnFamilyOptions.close();
+    writeOptions.close();
+    //flushOptions.close();
+    bloomFilter.close();
   }
 
   @Override
@@ -207,7 +258,7 @@ public class RocksDBStateStore implements Closeable {
       throw new RuntimeException(e);
     }
 
-    db.put(columnFamilyHandleList.get(1), key.getBytes(), value);
+    db.put(columnFamilyHandleList.get(1), writeOptions, key.getBytes(), value);
   }
 
   public void delete(String key) throws RocksDBException {
@@ -221,7 +272,7 @@ public class RocksDBStateStore implements Closeable {
       throw new RuntimeException(e);
     }
 
-    db.delete(columnFamilyHandleList.get(1), key.getBytes());
+    db.delete(columnFamilyHandleList.get(1), writeOptions, key.getBytes());
   }
 
   public byte[] get(String key) throws RocksDBException {
@@ -242,46 +293,56 @@ public class RocksDBStateStore implements Closeable {
         + ", changelogTopicPartition.topic=" + changelogTopicPartition.topic() + ", changelogTopicPartition.partition="
         + changelogTopicPartition.partition());
 
-    try (KafkaConsumer<String, byte[]> consumer = createConsumer()) {
+    KafkaConsumer<String, byte[]> consumer = null;
+    try {
+      consumer = createConsumer();
       // only one partition but assigning here to re-enforce this design
       consumer.assign(Collections.singleton(changelogTopicPartition));
       consumer.seekToEnd(Collections.singleton(changelogTopicPartition));
       long endOffset = consumer.position(changelogTopicPartition);
       // consumer.poll(Duration.ofMillis(0)); // dummy poll() to join consumer group
       consumer.seekToBeginning(Collections.singletonList(changelogTopicPartition));
+      long beginningOffset = consumer.position(changelogTopicPartition);
 
-      long offset = -1;
+      System.out.printf("restore - changelogTopicPartition.topic=%s, beginningOffset=%d, endOffset=%d, difference=%d\n", changelogTopicPartition.topic(), beginningOffset, endOffset, (endOffset-beginningOffset));
+
+      ConsumerRecords<String, byte[]> records = null;
       do {
-        ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(2000));
+        records = consumer.poll(Duration.ofMillis(100));
+        System.out.printf("restore - poll returned %d records\n", records.count());
         for (ConsumerRecord<String, byte[]> record : records) {
-          System.out.printf("restore - partition=%d, offset=%d, key=%s, value=%s\n", record.partition(),
-              record.offset(), record.key(), record.value());
+          System.out.printf("restore - partition=%d, offset=%d, key=%s, value=%s\n", record.partition(), record.offset(), record.key(), record.value());
 
           if (record.value() == null) {
             if (restoreTombstonesAsNull) {
               System.out.println("restore - tombstone as null, db.put(\"" + record.key() + "\")");
-              db.put(record.key().getBytes(), null);
+              db.put(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes(), null);
             } else {
               System.out.println("restore - db.delete(\"" + record.key() + "\")");
-              db.delete(record.key().getBytes());
+              db.delete(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes());
             }
           } else {
-            System.out.println("restore - db.put(\"" + record.key() + "\", \"" + record.value() + "\")");
-            db.put(record.key().getBytes(), record.value());
+            System.out.println("restore - db.put(\"" + record.key() + "\", \"" + new String(record.value(), StandardCharsets.UTF_8) + "\")");
+            db.put(columnFamilyHandleList.get(1), writeOptions, record.key().getBytes(), record.value());
           }
-          offset = record.offset();
         }
-      } while (offset != -1 && offset < endOffset);
+      } while (records != null && !records.isEmpty());
+    } finally {
+      // no need to commit or leave time for cleanup
+      // because every consumer will read from beginning to end of this changelog topic
+      consumer.close(Duration.ZERO);
     }
 
     // TODO: remove this code that is for test verification only
     byte[] count = get("count");
-    System.err.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
+    //System.err.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
+    //    + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
+    System.err.println(System.nanoTime() + "\trestore \tstore name='" + name + "',\tkey='count',\tvalue='"
         + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    System.err.println(System.nanoTime() + " ****** after restore store name='" + name + "', key='count', value='"
+    System.out.println(System.nanoTime() + "\trestore \tstore name='" + name + "',\tkey='count',\tvalue='"
         + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
-    System.out.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
-        + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
+    //System.out.println("RocksDBStateStore.restore - ****** name='" + name + "' key='count' value='"
+    //    + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
     System.out.println(System.nanoTime() + " ****** after restore store name='" + name + "', key='count', value='"
         + (count != null ? new String(count, StandardCharsets.UTF_8) : "null") + "'");
   }
@@ -303,8 +364,8 @@ public class RocksDBStateStore implements Closeable {
 
       // see https://kafka.apache.org/documentation.html#topicconfigs
       topicConfigs.put("cleanup.policy", "compact");
-      topicConfigs.put("min.compaction.lag.ms", "10");
-      topicConfigs.put("max.compaction.lag.ms", "20");
+      topicConfigs.put("min.compaction.lag.ms", "100");
+      topicConfigs.put("max.compaction.lag.ms", "200");
       topicConfigs.put("min.cleanable.dirty.ratio", "0.01");
       topicConfigs.put("segment.ms", "100");
       topicConfigs.put("retention.ms", "-1"); // must retain all messages

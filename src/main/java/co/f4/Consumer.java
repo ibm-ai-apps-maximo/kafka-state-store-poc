@@ -114,6 +114,7 @@ public class Consumer {
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
             System.out.println("Consumer.RebalanceListener.onPartitionsRevoked -  partitions:" + (partitions != null ? partitions : "null"));
+            System.err.println("Consumer.RebalanceListener.onPartitionsRevoked -  partitions:" + (partitions != null ? partitions : "null"));
 
             // close then delete state stores for revoked partitions
             for (TopicPartition topicPartition : partitions) {
@@ -138,10 +139,11 @@ public class Consumer {
                         e.printStackTrace(System.out);
                     }
                     
-                    System.err.println("Consumer.RebalanceListener.onPartitionsRevoked - ****** state store from stateStoreMap with key='" + key + "' has key-value: key=count and value=" + new String(value, StandardCharsets.UTF_8));
-                    System.err.println(System.nanoTime() + " ****** before destory store name='" + key + "', key='count', value='" + new String(value, StandardCharsets.UTF_8) + "'");
-                    System.out.println("Consumer.RebalanceListener.onPartitionsRevoked - ****** state store from stateStoreMap with key='" + key + "' has key-value: key=count and value=" + new String(value, StandardCharsets.UTF_8));
-                    System.out.println(System.nanoTime() + " ****** before destory store name='" + key + "', key='count', value='" + new String(value, StandardCharsets.UTF_8) + "'");
+                    
+                    System.err.println(System.nanoTime() + "\tdestory \tstore name='" + key + "',\tkey='count',\tvalue='"       + (value != null ? new String(value, StandardCharsets.UTF_8) : "null") + "'");
+                    //System.err.println(System.nanoTime() + "Consumer.RebalanceListener.onPartitionsRevoked - ****** before destory store name='" + key + "', key='count', value='" + new String(value, StandardCharsets.UTF_8) + "'");
+                    System.out.println(System.nanoTime() + "\tdestory \tstore name='" + key + "',\tkey='count',\tvalue='"       + (value != null ? new String(value, StandardCharsets.UTF_8) : "null") + "'");
+                    System.out.println(System.nanoTime() + "Consumer.RebalanceListener.onPartitionsRevoked - ****** before destory store name='" + key + "', key='count', value='" + new String(value, StandardCharsets.UTF_8) + "'");
                     try {
                         System.out.println("Consumer.RebalanceListener.onPartitionsRevoked -  destorying state store from stateStoreMap with key='" + key + "'");
                         stateStore.destroy();
@@ -160,6 +162,7 @@ public class Consumer {
         @Override
         public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
             System.out.println("Consumer.RebalanceListener.onPartitionsAssigned with partitions:" + (partitions != null ? partitions : "null"));
+            System.err.println("Consumer.RebalanceListener.onPartitionsAssigned with partitions:" + (partitions != null ? partitions : "null"));
 
             // no need to restore here
             // lazy restoration is used by allowing Consumer.getStateStore to create the
