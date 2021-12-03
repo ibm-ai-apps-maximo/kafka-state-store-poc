@@ -3,10 +3,12 @@ package co.f4;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Properties;
-
+import java.util.Set;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
 
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -84,22 +86,36 @@ public class Consumer {
         @Override
         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
             logger.error("Consumer.RebalanceListener.onPartitionsRevoked - partitions: {}", (partitions != null ? partitions : "null"));
-            
-            // close then delete state stores for revoked partitions
+        }
+        
+        @Override
+        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+            logger.error("Consumer.RebalanceListener.onPartitionsAssigned with partitions: {}", (partitions != null ? partitions : "null"));
+
+            Set<String> stateStoreNamesToRetain = new HashSet<String>();
+            // close then delete state stores for the partitions that are no longer assigned to the consumer
             for (TopicPartition topicPartition : partitions) {
-                String key = topicPartition.topic() + "-" + topicPartition.partition();
-                logger.debug("Consumer.RebalanceListener.onPartitionsRevoked - removing state store from stateStoreMap with key='{}'", key);
+                String stateStoreName = topicPartition.topic() + "-" + topicPartition.partition();
+                stateStoreNamesToRetain.add(stateStoreName);
+            }
+
+            Set<String> stateStoreMapKeySet = stateStoreMap.keySet();
+            
+            // close then delete state stores for the partitions that are no longer assigned to the consumer
+            //for (String stateStoreNameKey : stateStoreMapKeySet) {
+            for (Iterator<String> iterator = stateStoreMapKeySet.iterator(); iterator.hasNext(); ) {
+                String stateStoreNameKey = iterator.next();
+                if (stateStoreNamesToRetain.contains(stateStoreNameKey)) {
+                    logger.debug("Consumer.RebalanceListener.onPartitionsAssigned - retaining state store '{}'", stateStoreNameKey);
+                    continue;
+                }
+
+                logger.debug("Consumer.RebalanceListener.onPartitionsAssigned - removing state store from stateStoreMap with key='{}'", stateStoreNameKey);
 
                 RocksDBStateStore stateStore;
 
-                // added thread safety because I  experienced odd scenarios where I suspect
-                // 1) onPartitionsRevoked was invoked concurrently (which is not possible based on Kakfa docs and therefore unlikely) or
-                // 2) a RockDB native resource has not completed work but has prematurely returned control back to Java counterpart ending onPartitionsRevoked invocation early
-                // which would allow reentry into onPartitionsRevoked - this was likely due to use of older version of RocksDB. No longer using the older version but leaving
-                // then synchronized block to be safe
-                synchronized (stateStoreMap) {
-                    stateStore = stateStoreMap.remove(key);
-                }
+                stateStore = stateStoreMap.get(stateStoreNameKey);
+                iterator.remove();
 
                 if (stateStore != null) {
                     byte[] value = null;
@@ -110,26 +126,24 @@ public class Consumer {
                     }
                     
                     
-                    logger.error("destory \tstore name='{}',\tkey='count',\tvalue='{}'", key, (value != null ? new String(value, StandardCharsets.UTF_8) : "null"));
+                    logger.error("destory \tstore name='{}',\tkey='count',\tvalue='{}'", stateStoreNameKey, (value != null ? new String(value, StandardCharsets.UTF_8) : "null"));
                     try {
-                        logger.debug("Consumer.RebalanceListener.onPartitionsRevoked - destorying state store from stateStoreMap with key='{}'", key);
+                        logger.debug("Consumer.RebalanceListener.onPartitionsAssigned - destroying state store '{}'", stateStoreNameKey);
                         stateStore.destroy();
                     } catch (RocksDBException e) {
                         // cannot recover from this exception so simply log
-                        e.printStackTrace();
+                        if (logger.isWarnEnabled()) {
+                            logger.warn("Failed to destory state store'" + stateStoreNameKey + "'", e);
+                        }
                     }
-                    logger.debug("Consumer.RebalanceListener.onPartitionsRevoked - closing state store from stateStoreMap with key='{}'", key);
+                    logger.debug("Consumer.RebalanceListener.onPartitionsAssigned - closing state store '{}'", stateStoreNameKey);
                     stateStore.close();
                 } else {
-                    logger.debug("Consumer.RebalanceListener.onPartitionsRevoked - no store in stateStoreMap with key='{}'", key);
+                    logger.debug("Consumer.RebalanceListener.onPartitionsAssigned - no store in stateStoreMap with key='{}'", stateStoreNameKey);
                 }
             }
-            logger.error("Consumer.RebalanceListener.onPartitionsRevoked - done");
-        }
-        
-        @Override
-        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-            logger.error("Consumer.RebalanceListener.onPartitionsAssigned with partitions: {}", (partitions != null ? partitions : "null"));
+
+            logger.error("Consumer.RebalanceListener.onPartitionsAssigned - done");
 
             // no need to restore here
             // lazy restoration is used by allowing Consumer.getStateStore to create the

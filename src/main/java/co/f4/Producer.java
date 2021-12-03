@@ -34,8 +34,8 @@ import org.apache.kafka.clients.producer.RecordMetadata;
         SendCallback callback = new SendCallback();
         Random random = new Random();
         for (int i = 0; i < 1000000; i++) {
-            // generate random number between 1 and 10
-            String key = Integer.toString(random.nextInt(10 - 1) + 1);            
+            // generate random number between 1 and 1000
+            String key = Integer.toString(random.nextInt(1000 - 1) + 1);            
             ProducerRecord<String, String> record = new ProducerRecord<String, String>(topic, key, Integer.toString(i));
             producer.send(record, callback);
             System.out.printf("Send    topic=%s\tkey=%s' value=%d\n", topic, key, i);
