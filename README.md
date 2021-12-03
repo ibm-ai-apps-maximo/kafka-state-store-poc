@@ -45,7 +45,7 @@ docker exec -it 4da81527e4e5 bash
 # Monitoring & Kafka Administration
 
 ## Viewing logs
-All process will write log messages to target/logs/poc.log.  The messages are interweaved and the log provides a single view into the state of the system. Messages are also sent to the consoles of each process.  The log4j2.xml file at src/main/resources controls the behavior of the loggers.
+All process will write log messages to target/logs/poc.log.  The messages from processes on the same machine are interweaved and the log provides a single view into the state of the system on a single machine. Messages are also sent to the consoles of each process.  The log4j2.xml file at src/main/resources controls the behavior of the loggers.
 
 The format of each message in poc.log starts with a timestamp and then the process id. For example:
 

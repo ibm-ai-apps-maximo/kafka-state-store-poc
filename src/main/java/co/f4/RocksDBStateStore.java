@@ -182,6 +182,11 @@ public class RocksDBStateStore implements Closeable {
     restore();
   }
 
+  /**
+   * See {@link #RocksDBStateStore() RocksDBStateStore()} for more details. This constructor defaults restoreTombstonesAsNull to false.
+   * @param name
+   * @throws RocksDBException
+   */
   public RocksDBStateStore(String name) throws RocksDBException {
     this(name, false);
   }
@@ -327,30 +332,34 @@ public class RocksDBStateStore implements Closeable {
    * @throws IllegalStateException  If the state store is closed from a previous
    *                                call of close()
    */
-  public void restore() throws RocksDBException {
+  private void restore() throws RocksDBException {
     if (closed)
       throw new IllegalStateException("State store with name '" + name + "' is closed and can no longer be used.");
 
     logger.debug(
         "restore - restoreTombstonesAsNull={}, changelogTopicPartition.topic={}, changelogTopicPartition.partition={}",
         restoreTombstonesAsNull, changelogTopicPartition.topic(), changelogTopicPartition.partition());
+    
     KafkaConsumer<String, byte[]> consumer = null;
     try {
       consumer = createConsumer();
       // only one partition but assigning here to re-enforce this design
       consumer.assign(Collections.singleton(changelogTopicPartition));
-      consumer.seekToEnd(Collections.singleton(changelogTopicPartition));
-      long endOffset = consumer.position(changelogTopicPartition);
-      // consumer.poll(Duration.ofMillis(0)); // dummy poll() to join consumer group
+      consumer.poll(Duration.ofMillis(0)); // dummy poll() to join consumer group and workaround potential bug with seeking
       consumer.seekToBeginning(Collections.singletonList(changelogTopicPartition));
-      long beginningOffset = consumer.position(changelogTopicPartition);
-
-      logger.debug("restore - changelogTopicPartition.topic={}, beginningOffset={}, endOffset={}, difference={}",
-          changelogTopicPartition.topic(), beginningOffset, endOffset, (endOffset - beginningOffset));
 
       ConsumerRecords<String, byte[]> records = null;
+      int counter = 1;
       do {
-        records = consumer.poll(Duration.ofMillis(100));
+        // using a shorter duration on this poll will increase the risk of
+        // the poll returning empty records list.  There appears to be a bug with poll
+        // because when attempting to use a shorter duration poll return empty records
+        // when the changelogTopicPartition contains records 
+        records = consumer.poll(Duration.ofMillis(500));
+        if (counter ==1 && (records == null || records.isEmpty())) {
+          logger.error("restore - first poll returned no records. store name='{}'", name);
+        }
+        counter++;
         logger.debug("restore - poll returned {} records", records.count());
         for (ConsumerRecord<String, byte[]> record : records) {
           logger.debug("restore - partition={}, offset={}, key={}, value={}", record.partition(), record.offset(),
@@ -374,7 +383,8 @@ public class RocksDBStateStore implements Closeable {
       // no need to commit or leave time for cleanup
       // because every consumer will read from beginning to end of this changelog
       // topic
-      consumer.close(Duration.ZERO);
+      //consumer.close(Duration.ZERO);
+      consumer.close();
     }
 
     // TODO: remove this code that is for test verification only
@@ -448,8 +458,12 @@ public class RocksDBStateStore implements Closeable {
     props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
         "org.apache.kafka.common.serialization.ByteArrayDeserializer");
     props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
-    // props.put(ConsumerConfig.GROUP_ID_CONFIG, name);
-    props.put(ConsumerConfig.GROUP_ID_CONFIG, UUID.randomUUID().toString()); // force a read from beginning of topic
+    props.put(ConsumerConfig.GROUP_ID_CONFIG, name);
+    /*
+    String consumerGroup = UUID.randomUUID().toString();
+    props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroup); // force a read from beginning of topic with unique consumer group
+    logger.debug("store name={} consumerGroup={}", name, consumerGroup);
+    */
     KafkaConsumer<String, byte[]> kafkaConsumer = new KafkaConsumer<String, byte[]>(props);
     return kafkaConsumer;
   }

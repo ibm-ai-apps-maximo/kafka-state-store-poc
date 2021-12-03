@@ -85,7 +85,6 @@
 
                     <execution>
                         <id>consumer1</id>
-
                         <goals>
                             <goal>java</goal>
                         </goals>
@@ -103,7 +102,6 @@
 
                     <execution>
                         <id>consumer2</id>
-
                         <goals>
                             <goal>java</goal>
                         </goals>
