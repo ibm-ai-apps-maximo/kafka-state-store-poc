@@ -457,7 +457,13 @@ public class RocksDBStateStore implements Closeable {
     props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
         "org.apache.kafka.common.serialization.ByteArrayDeserializer");
     props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+    // There should never be two or more consumers concurrently reading from the single partition of the changelog topic
+    // So all consumers of this single partition can use the same consumer group
     props.put(ConsumerConfig.GROUP_ID_CONFIG, name);
+    
+    // uncommenting this code will allow more than one consumer to read from the single partition of the changelog topic
+    // there is no harm in restoring state stores on different consumers but two different producers writing to the same
+    // changelog topic is not supported and will have bad consequences.
     /*
     String consumerGroup = UUID.randomUUID().toString();
     props.put(ConsumerConfig.GROUP_ID_CONFIG, consumerGroup); // force a read from beginning of topic with unique consumer group
